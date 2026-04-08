@@ -2,58 +2,65 @@ import numpy as np
 import random
 
 class TrafficEnv:
-    def __init__(self):
+    def __init__(self, max_steps=100):
+        self.max_steps = max_steps
+        self.eval_mode = False
         self.reset()
 
     def reset(self):
-        self.time = 0
-        
-        # cars in each lane
-        self.north = random.randint(0, 20)
-        self.south = random.randint(0, 20)
-        self.east = random.randint(0, 20)
-        self.west = random.randint(0, 20)
+        self.step_count = 0
+        self.queues = np.random.randint(0, 20, 4)
+        self.waiting = np.zeros(4)
+        self.time = random.randint(0, 23)
+        self.phase = 0
+        self.emergency = random.choice([0, 1])
+        return self._get_state()
 
-        self.signal = 0  # 0: NS green, 1: EW green
-        return self.get_state()
-
-    def get_state(self):
-        return np.array([
-            self.north, self.south,
-            self.east, self.west,
-            self.signal
-        ], dtype=np.float32)
+    def _get_state(self):
+        return np.concatenate([
+            self.queues,
+            self.waiting,
+            [self.emergency, self.time, self.phase]
+        ]).astype(np.float32)
 
     def step(self, action):
-        reward = 0
+        phase, duration = action
+        cars_passed = 0
 
-        # Action: 0 = NS green, 1 = EW green
-        self.signal = action
+        for _ in range(duration):
+            if phase == 0:
+                lanes = [0, 1]
+            else:
+                lanes = [2, 3]
 
-        # cars passing
-        if self.signal == 0:
-            passed_ns = min(self.north, 5) + min(self.south, 5)
-            self.north -= min(self.north, 5)
-            self.south -= min(self.south, 5)
-            reward += passed_ns
+            for i in lanes:
+                passed = min(self.queues[i], 2)
+                self.queues[i] -= passed
+                cars_passed += passed
 
-        else:
-            passed_ew = min(self.east, 5) + min(self.west, 5)
-            self.east -= min(self.east, 5)
-            self.west -= min(self.west, 5)
-            reward += passed_ew
+            if not self.eval_mode:
+                self.queues += np.random.randint(0, 3, 4)
 
-        # new cars arrive
-        self.north += random.randint(0, 5)
-        self.south += random.randint(0, 5)
-        self.east += random.randint(0, 5)
-        self.west += random.randint(0, 5)
+            self.waiting += self.queues
 
-        # penalty for waiting
-        wait_penalty = self.north + self.south + self.east + self.west
-        reward -= wait_penalty * 0.1
+        total_wait = np.sum(self.waiting)
+        queue_penalty = np.sum(self.queues)
+        fairness = np.std(self.queues)
 
-        self.time += 1
-        done = self.time >= 50
+        reward = (
+            -0.1 * total_wait
+            -0.05 * queue_penalty
+            +0.2 * cars_passed
+            -0.1 * fairness
+        )
 
-        return self.get_state(), reward, done, {}
+        if self.emergency == 1 and phase == 0:
+            reward += 5
+
+        self.phase = phase
+        self.time = (self.time + 1) % 24
+        self.step_count += 1
+
+        done = self.step_count >= self.max_steps
+
+        return self._get_state(), reward, done, {}
